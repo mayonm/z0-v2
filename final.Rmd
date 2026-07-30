@@ -1,0 +1,125 @@
+---
+title: "Final Code Document"
+output: html_document
+---
+ ## Cleaning
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(dplyr)
+library(ggplot2)
+```
+
+```{r import-data}
+speed_dating_data <- readr::read_csv(
+  "data/Speed_Dating_Data.csv",
+  show_col_types = FALSE
+)
+
+speed_dating_data
+
+
+names(speed_dating_data)
+
+```
+
+
+```{r}
+columns_to_keep <- c(
+  # Identifiers
+  "iid",
+
+  # Person's demographics and date's demographics
+  "gender", "age", "race",
+  "age_o", "race_o", "samerace",
+
+  # Person's evaluation of their date
+  "attr", "sinc", "intel", "fun", "amb", "shar",
+
+  # Decisions and final match
+  "dec"
+)
+```
+
+
+```{r}
+speed_dating_data <- speed_dating_data %>%
+  select(any_of(columns_to_keep))
+
+speed_dating_data <- speed_dating_data %>%
+  mutate(person = row_number(), .before = 1)
+
+names(speed_dating_data)
+
+head(speed_dating_data)
+```
+
+
+
+## EDA
+
+```{r race-distribution}
+race_distribution <- speed_dating_data %>%
+  filter(!is.na(race)) %>%
+  distinct(iid, .keep_all = TRUE) %>%
+  mutate(
+    race_label = factor(
+      race,
+      levels = 1:6,
+      labels = c(
+        "Black/African American",
+        "European/Caucasian-American",
+        "Latino/Hispanic American",
+        "Asian/Pacific Islander/Asian-American",
+        "Native American",
+        "Other"
+      )
+    )
+  )
+
+ggplot(
+  race_distribution,
+  aes(x = race_label)
+) +
+  geom_bar(fill = "steelblue", color = "black") +
+  labs(
+    title = "Distribution of Race in the Speed Dating Survey",
+    x = "Race",
+    y = "Number of Participants"
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(
+      angle = 45,
+      hjust = 1
+    )
+  )
+```
+
+```{r same-race-decision-chart}
+ggplot(
+  speed_dating_data,
+  aes(
+    x = factor(
+      samerace,
+      levels = c(0, 1),
+      labels = c("Different race", "Same race")
+    ),
+    fill = factor(
+      dec,
+      levels = c(0, 1),
+      labels = c("No", "Yes")
+    )
+  )
+) +
+  geom_bar(position = "fill", color = "black") +
+  scale_y_continuous(
+    labels = function(x) paste0(round(x * 100), "%")
+  ) +
+  labs(
+    title = "Dating Decisions by Same-Race Status",
+    x = "Same-race status",
+    y = "Percentage of decisions",
+    fill = "Decision"
+  ) +
+  theme_minimal()
+```
