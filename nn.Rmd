@@ -1,0 +1,404 @@
+---
+title: "Feedforward Neural Network for Second-Date Decisions"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+set.seed(20260730)
+```
+
+## Research question
+
+Can we predict whether one participant chooses to see another participant again
+from tracked racial preferences and other characteristics known before the
+date? This is a **binary classification** problem. The model predicts a
+probability internally, but the final prediction is always a categorical
+`Yes` or `No` decision.
+
+The outcome is defined as follows:
+
+```r
+decision = 1  # Yes: the participant wants to see the partner again
+decision = 0  # No
+```
+
+The neural network uses one hidden layer, so it is a feedforward neural network
+and not a regression model. A probability of at least `0.50` is classified as
+`Yes`.
+
+## Data preparation
+
+The model uses the cleaned fields supplied for this project: the participant's
+and partner's demographics/racial context (`gender`, `age`, `race`, `age_o`,
+`race_o`, and `samerace`) plus the participant's ratings of the date (`attr`,
+`sinc`, `intel`, `fun`, `amb`, and `shar`). `iid` is excluded because it is an
+identifier, and `dec` is converted into the binary outcome rather than used as
+a predictor. No interests, goals, dating habits, career, or other variables are
+used.
+
+```{r packages-and-data}
+if (!requireNamespace("nnet", quietly = TRUE)) {
+  stop("This report requires the nnet package. Install it with install.packages('nnet').")
+}
+
+library(nnet)
+
+speed_dating_data <- read.csv(
+  "data/Speed_Dating_Data.csv",
+  na.strings = c("", "NA"),
+  stringsAsFactors = FALSE,
+  check.names = FALSE
+)
+
+model_variables <- c(
+  "dec", "gender", "age", "race", "age_o", "race_o", "samerace",
+  "attr", "sinc", "intel", "fun", "amb", "shar"
+)
+
+dat <- speed_dating_data[, model_variables]
+dat$decision <- as.integer(dat$dec == 1)
+dat$dec <- NULL
+
+categorical_variables <- c(
+  "gender", "race", "race_o"
+)
+dat[categorical_variables] <- lapply(dat[categorical_variables], factor)
+
+dat <- dat[complete.cases(dat), ]
+dat$decision <- factor(dat$decision, levels = c(0, 1), labels = c("No", "Yes"))
+
+table(dat$decision)
+```
+
+## Stratified train/test split
+
+The split is stratified so that both sets contain Yes and No decisions in
+approximately the same proportions. The test set is held out until the final
+evaluation.
+
+```{r split-and-design-matrix}
+yes_rows <- which(dat$decision == "Yes")
+no_rows <- which(dat$decision == "No")
+
+train_rows <- c(
+  sample(yes_rows, floor(0.80 * length(yes_rows))),
+  sample(no_rows, floor(0.80 * length(no_rows)))
+)
+
+train <- dat[train_rows, , drop = FALSE]
+test <- dat[-train_rows, , drop = FALSE]
+
+x_all <- model.matrix(decision ~ ., dat)[, -1, drop = FALSE]
+x_train <- x_all[train_rows, , drop = FALSE]
+x_test <- x_all[-train_rows, , drop = FALSE]
+y_train <- as.integer(train$decision == "Yes")
+y_test <- as.integer(test$decision == "Yes")
+
+train_means <- colMeans(x_train)
+train_sds <- apply(x_train, 2, sd)
+train_sds[is.na(train_sds) | train_sds == 0] <- 1
+
+x_train_scaled <- sweep(sweep(x_train, 2, train_means, "-"), 2, train_sds, "/")
+x_test_scaled <- sweep(sweep(x_test, 2, train_means, "-"), 2, train_sds, "/")
+```
+
+## Feedforward neural network
+
+The network has one hidden layer with eight units. `entropy = TRUE` fits a
+logistic binary output, so `predict(..., type = "raw")` returns the estimated
+probability of `Yes`. Weight decay regularizes the network and helps reduce
+overfitting.
+
+```{r fit-neural-network}
+nn_fit <- nnet(
+  x = x_train_scaled,
+  y = y_train,
+  size = 8,
+  decay = 0.001,
+  maxit = 500,
+  entropy = TRUE,
+  linout = FALSE,
+  trace = FALSE,
+  MaxNWts = 10000
+)
+
+probability_yes <- as.numeric(predict(nn_fit, x_test_scaled, type = "raw"))
+
+classification_threshold <- 0.50
+predicted_decision <- factor(
+  ifelse(probability_yes >= classification_threshold, "Yes", "No"),
+  levels = c("No", "Yes")
+)
+actual_decision <- factor(test$decision, levels = c("No", "Yes"))
+
+confusion_matrix <- table(
+  Actual = actual_decision,
+  Predicted = predicted_decision
+)
+confusion_matrix
+```
+
+The model's final output is categorical:
+
+```{r categorical-predictions}
+predictions <- data.frame(
+  probability_yes = probability_yes,
+  predicted_decision = predicted_decision,
+  actual_decision = actual_decision
+)
+head(predictions)
+```
+
+## Test-set evaluation
+
+```{r evaluation}
+tp <- sum(y_test == 1 & predicted_decision == "Yes")
+tn <- sum(y_test == 0 & predicted_decision == "No")
+fp <- sum(y_test == 0 & predicted_decision == "Yes")
+fn <- sum(y_test == 1 & predicted_decision == "No")
+
+safe_divide <- function(numerator, denominator) {
+  if (denominator == 0) NA_real_ else numerator / denominator
+}
+
+auc <- function(actual, scores) {
+  positive <- actual == 1
+  n_positive <- sum(positive)
+  n_negative <- sum(!positive)
+  if (n_positive == 0 || n_negative == 0) return(NA_real_)
+  ranks <- rank(scores, ties.method = "average")
+  (sum(ranks[positive]) - n_positive * (n_positive + 1) / 2) /
+    (n_positive * n_negative)
+}
+
+accuracy <- safe_divide(tp + tn, length(y_test))
+sensitivity <- safe_divide(tp, tp + fn)
+specificity <- safe_divide(tn, tn + fp)
+balanced_accuracy <- mean(c(sensitivity, specificity), na.rm = TRUE)
+
+pr_ordering <- order(probability_yes, decreasing = TRUE)
+pr_actual <- y_test[pr_ordering]
+pr_true_positive <- cumsum(pr_actual == 1)
+pr_recall <- c(0, pr_true_positive / sum(pr_actual == 1))
+pr_precision <- c(1, pr_true_positive / seq_along(pr_actual))
+prc_auc <- sum(diff(pr_recall) *
+  (head(pr_precision, -1) + tail(pr_precision, -1)) / 2)
+average_precision <- sum(diff(pr_recall) * tail(pr_precision, -1))
+
+metrics <- data.frame(
+  threshold = classification_threshold,
+  accuracy = accuracy,
+  sensitivity_yes = sensitivity,
+  specificity_no = specificity,
+  balanced_accuracy = balanced_accuracy,
+  roc_auc = auc(y_test, probability_yes),
+  prc_auc = prc_auc,
+  average_precision = average_precision
+)
+metrics
+```
+
+## Important classification graphs
+
+The following graphs summarize the outcome balance, the model's categorical
+predictions, discrimination, calibration, and which encoded predictors most
+affect held-out accuracy. PNG copies are saved in `graphs/neural_network/`.
+
+```{r create-classification-graphs}
+graph_dir <- file.path("graphs", "neural_network")
+dir.create(graph_dir, recursive = TRUE, showWarnings = FALSE)
+
+save_png <- function(filename, plot_function, width = 1600, height = 1000) {
+  png(file.path(graph_dir, filename), width = width, height = height, res = 180)
+  on.exit(dev.off(), add = TRUE)
+  plot_function()
+}
+
+plot_class_balance <- function() {
+  counts <- table(dat$decision)
+  barplot(
+    counts,
+    col = c("#4C78A8", "#F58518"),
+    ylab = "Number of decisions",
+    main = "Class balance in the modeling data"
+  )
+}
+
+plot_confusion_matrix <- function() {
+  plot.new()
+  plot.window(xlim = c(0, 2), ylim = c(0, 2))
+  title("Neural network confusion matrix (test set)")
+  for (row in seq_len(2)) {
+    for (column in seq_len(2)) {
+      x_left <- column - 1
+      y_bottom <- 2 - row
+      fill <- if (row == column) "#B7D8B7" else "#F2C2C2"
+      rect(x_left, y_bottom, x_left + 1, y_bottom + 1, col = fill, border = "white")
+      text(x_left + 0.5, y_bottom + 0.5, confusion_matrix[row, column], cex = 1.6)
+    }
+  }
+  axis(1, at = c(0.5, 1.5), labels = colnames(confusion_matrix), tick = FALSE)
+  axis(2, at = c(1.5, 0.5), labels = rownames(confusion_matrix), tick = FALSE, las = 1)
+  mtext("Predicted decision", side = 1, line = 2.4)
+  mtext("Actual decision", side = 2, line = 2.4)
+  box()
+}
+
+roc_curve <- function(actual, scores) {
+  ordering <- order(scores, decreasing = TRUE)
+  ordered_actual <- actual[ordering]
+  positive_total <- sum(ordered_actual == 1)
+  negative_total <- sum(ordered_actual == 0)
+  data.frame(
+    false_positive_rate = c(0, cumsum(ordered_actual == 0) / negative_total),
+    true_positive_rate = c(0, cumsum(ordered_actual == 1) / positive_total)
+  )
+}
+
+pr_curve <- function(actual, scores) {
+  ordering <- order(scores, decreasing = TRUE)
+  ordered_actual <- actual[ordering]
+  true_positive <- cumsum(ordered_actual == 1)
+  data.frame(
+    recall = c(0, true_positive / sum(ordered_actual == 1)),
+    precision = c(1, true_positive / seq_along(ordered_actual))
+  )
+}
+
+roc_values <- roc_curve(y_test, probability_yes)
+pr_values <- pr_curve(y_test, probability_yes)
+
+plot_roc <- function() {
+  plot(
+    roc_values$false_positive_rate, roc_values$true_positive_rate,
+    type = "l", lwd = 3, col = "#4C78A8",
+    xlab = "False positive rate", ylab = "True positive rate",
+    main = sprintf("ROC curve (ROC-AUC = %.3f)", metrics$roc_auc),
+    xlim = c(0, 1), ylim = c(0, 1)
+  )
+  abline(0, 1, lty = 2, col = "gray50")
+  legend(
+    "bottomright",
+    legend = c(sprintf("Model: ROC-AUC = %.3f", metrics$roc_auc),
+               "No-discrimination reference"),
+    col = c("#4C78A8", "gray50"), lty = c(1, 2), lwd = c(3, 1), bty = "n"
+  )
+}
+
+plot_precision_recall <- function() {
+  plot(
+    pr_values$recall, pr_values$precision,
+    type = "l", lwd = 3, col = "#F58518",
+    xlab = "Recall (sensitivity for Yes)", ylab = "Precision",
+    main = sprintf("Precision-recall curve (PRC-AUC = %.3f)", prc_auc),
+    xlim = c(0, 1), ylim = c(0, 1)
+  )
+  abline(h = mean(y_test), lty = 2, col = "gray50")
+  legend(
+    "bottomleft",
+    legend = c(
+      sprintf("Model: PRC-AUC = %.3f; average precision = %.3f", prc_auc, average_precision),
+      sprintf("No-skill average Yes rate = %.3f", mean(y_test))
+    ),
+    col = c("#F58518", "gray50"), lty = c(1, 2), lwd = c(3, 1), bty = "n"
+  )
+}
+
+plot_probability_distribution <- function() {
+  no_scores <- probability_yes[y_test == 0]
+  yes_scores <- probability_yes[y_test == 1]
+  breaks <- seq(0, 1, by = 0.05)
+  no_histogram <- hist(no_scores, breaks = breaks, plot = FALSE)
+  yes_histogram <- hist(yes_scores, breaks = breaks, plot = FALSE)
+  ymax <- max(c(no_histogram$counts, yes_histogram$counts))
+  plot(
+    no_histogram, col = rgb(0.30, 0.47, 0.66, 0.55), border = "white",
+    xlim = c(0, 1), ylim = c(0, ymax),
+    xlab = "Predicted probability of Yes", ylab = "Test-set count",
+    main = "Predicted-probability distribution by actual decision"
+  )
+  plot(yes_histogram, col = rgb(0.96, 0.52, 0.09, 0.55), border = "white", add = TRUE)
+  abline(v = classification_threshold, lty = 2, lwd = 2)
+  legend(
+    "topright", legend = c("Actual No", "Actual Yes", "0.50 threshold"),
+    fill = c(rgb(0.30, 0.47, 0.66, 0.55), rgb(0.96, 0.52, 0.09, 0.55), NA),
+    border = c("white", "white", NA), lty = c(NA, NA, 2), bty = "n"
+  )
+}
+
+plot_calibration <- function() {
+  bins <- cut(probability_yes, breaks = seq(0, 1, by = 0.10), include.lowest = TRUE)
+  calibration <- data.frame(
+    predicted_probability = as.numeric(tapply(probability_yes, bins, mean)),
+    observed_yes_rate = as.numeric(tapply(y_test, bins, mean))
+  )
+  calibration <- calibration[complete.cases(calibration), , drop = FALSE]
+  plot(
+    calibration$predicted_probability, calibration$observed_yes_rate,
+    pch = 19, cex = 1.2, col = "#54A24B",
+    xlab = "Mean predicted probability", ylab = "Observed Yes rate",
+    main = "Calibration plot (test set)", xlim = c(0, 1), ylim = c(0, 1)
+  )
+  lines(calibration$predicted_probability, calibration$observed_yes_rate,
+        col = "#54A24B", lwd = 2)
+  abline(0, 1, lty = 2, col = "gray50")
+}
+
+set.seed(20260730)
+baseline_accuracy <- mean(as.integer(predicted_decision == "Yes") == y_test)
+permutation_importance <- vapply(seq_len(ncol(x_test_scaled)), function(column) {
+  permuted_test <- x_test_scaled
+  permuted_test[, column] <- sample(permuted_test[, column])
+  permuted_probability <- as.numeric(predict(nn_fit, permuted_test, type = "raw"))
+  permuted_prediction <- as.integer(permuted_probability >= classification_threshold)
+  baseline_accuracy - mean(permuted_prediction == y_test)
+}, numeric(1))
+names(permutation_importance) <- colnames(x_test_scaled)
+
+importance <- sort(permutation_importance, decreasing = TRUE)
+
+plot_permutation_importance <- function() {
+  barplot(
+    rev(importance), names.arg = rev(names(importance)),
+    horiz = TRUE, las = 1, col = "#72B7B2",
+    xlab = "Decrease in test accuracy after permutation",
+    main = "Permutation importance of encoded predictors"
+  )
+  abline(v = 0, lty = 2, col = "gray50")
+}
+
+save_png("01_class_balance.png", plot_class_balance)
+save_png("02_confusion_matrix.png", plot_confusion_matrix)
+save_png("03_roc_curve.png", plot_roc)
+save_png("04_precision_recall_curve.png", plot_precision_recall)
+save_png("05_probability_distribution.png", plot_probability_distribution)
+save_png("06_calibration_plot.png", plot_calibration)
+save_png("07_permutation_importance.png", plot_permutation_importance)
+
+graph_files <- file.path(
+  graph_dir,
+  c(
+    "01_class_balance.png", "02_confusion_matrix.png", "03_roc_curve.png",
+    "04_precision_recall_curve.png", "05_probability_distribution.png",
+    "06_calibration_plot.png", "07_permutation_importance.png"
+  )
+)
+```
+
+```{r display-classification-graphs, fig.show='hold', out.width='95%'}
+if (requireNamespace("knitr", quietly = TRUE)) {
+  knitr::include_graphics(graph_files)
+} else {
+  graph_files
+}
+```
+
+## Conclusion
+
+This analysis uses a feedforward neural network for a binary categorical
+outcome. The network estimates `P(decision = Yes)`, and the fixed threshold of
+0.50 converts that probability into the required categorical `Yes`/`No`
+prediction. The reported accuracy, sensitivity, specificity, balanced
+accuracy, confusion matrix, ROC-AUC, PRC-AUC, and average precision are all
+classification results evaluated on held-out observations.
