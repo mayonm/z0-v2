@@ -7,6 +7,7 @@ output: html_document
 knitr::opts_chunk$set(echo = TRUE)
 library(dplyr)
 library(ggplot2)
+library(scales)
 ```
 
 ```{r import-data}
@@ -14,6 +15,9 @@ speed_dating_data <- readr::read_csv(
   "data/Speed_Dating_Data.csv",
   show_col_types = FALSE
 )
+speed_dating_data <- speed_dating_data %>%
+  filter(!is.na(race))
+
 
 speed_dating_data
 
@@ -45,9 +49,6 @@ columns_to_keep <- c(
 speed_dating_data <- speed_dating_data %>%
   select(any_of(columns_to_keep))
 
-speed_dating_data <- speed_dating_data %>%
-  mutate(person = row_number(), .before = 1)
-
 names(speed_dating_data)
 
 head(speed_dating_data)
@@ -56,10 +57,8 @@ head(speed_dating_data)
 
 
 ## EDA
-
-```{r race-distribution}
+```{r making a grpah for the distribution of race in the dataset}
 race_distribution <- speed_dating_data %>%
-  filter(!is.na(race)) %>%
   distinct(iid, .keep_all = TRUE) %>%
   mutate(
     race_label = factor(
@@ -82,20 +81,48 @@ ggplot(
 ) +
   geom_bar(fill = "steelblue", color = "black") +
   labs(
-    title = "Distribution of Race in the Speed Dating Survey",
+    title = "Distribution of Race Among Survey Participants",
     x = "Race",
     y = "Number of Participants"
   ) +
+  scale_x_discrete(drop = FALSE) +
   theme_minimal() +
   theme(
-    axis.text.x = element_text(
-      angle = 45,
-      hjust = 1
-    )
+    axis.text.x = element_text(angle = 45, hjust = 1)
   )
 ```
 
-```{r same-race-decision-chart}
+```{r counting the number of people in each race}
+race_counts <- speed_dating_data %>%
+  distinct(iid, .keep_all = TRUE) %>%
+  mutate(
+    race = factor(
+      race,
+      levels = 1:6,
+      labels = c(
+        "Black/African American",
+        "European/Caucasian-American",
+        "Latino/Hispanic American",
+        "Asian/Pacific Islander/Asian-American",
+        "Native American",
+        "Other"
+      )
+    )
+  ) %>%
+  count(race, name = "number_of_people", .drop = FALSE)
+
+race_counts
+
+```
+
+```{r}
+total_unique_people <- 26+304+42+136+0+37
+total_unique_people
+```
+
+```{r stacked bar chart of samerace vs dec}
+library(ggplot2)
+
 ggplot(
   speed_dating_data,
   aes(
@@ -122,4 +149,9 @@ ggplot(
     fill = "Decision"
   ) +
   theme_minimal()
+```
+
+
+```{r}
+
 ```
