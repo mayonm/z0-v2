@@ -1,0 +1,228 @@
+---
+title: "Random Forest"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+# loading
+if (!require("pacman")) {
+  install.packages("pacman")
+}
+pacman::p_load(
+  tree, rpart, randomForest, ranger, rattle, pROC,
+  partykit, ggplot2, glmnet, lda, data.table,
+  stargazer, gridExtra, ggrepel, readr, dplyr, tidyr
+)
+options(scipen = 0, digits = 3)
+```
+
+```{r import-data}
+data_path <- "../../data/speed_dating_clean.csv"
+data <- readr::read_csv(data_path, show_col_types = FALSE)
+
+# Select variables by name so the code does not depend on column positions.
+target <- "dec"
+predictors <- c(
+  "gender", "age", "race",
+  "age_o", "race_o", "samerace",
+  "attr", "sinc", "intel", "fun", "amb", "shar"
+)
+
+required_columns <- c(target, predictors)
+
+# data1 is the final modeling data. iid is excluded because it is only a participant identifier.
+# data1 changes numerical variables into categorical variables/factors
+data1 <- data |>
+  dplyr::select(dplyr::all_of(required_columns)) |>
+  dplyr::mutate(
+    dec = factor(dec, levels = c(0, 1), labels = c("No", "Yes")),
+    gender = factor(gender, levels = c(0, 1), labels = c("Female", "Male")),
+    race = factor(race),
+    race_o = factor(race_o),
+    samerace = factor(samerace, levels = c(0, 1), labels = c("No", "Yes"))
+  ) |>
+  tidyr::drop_na()
+
+# dim(data1)
+# names(data1)
+# table(data1$dec)
+```
+
+```{r rf}
+# Binary random forest using the OOB error for internal evaluation.
+set.seed(1)
+fit.rf <- randomForest::randomForest(
+  dec ~ .,
+  data = data1,
+  mtry = 4,
+  ntree = 500,
+  importance = TRUE
+)
+
+# names(fit.rf)
+```
+
+```{r}
+# OOB predictions and OOB classification error
+oob_pred <- fit.rf$predicted
+oob_error <- mean(oob_pred != data1$dec)
+
+oob_error
+table(
+  Actual = data1$dec,
+  Predicted = oob_pred
+)
+
+# OOB classification error as the number of trees increases.
+plot(
+  fit.rf,
+  type = "l",
+  col = c("black", "blue", "red"),
+  main = "OOB classification error"
+)
+oob_error <- fit.rf$err.rate[fit.rf$ntree, "OOB"]
+oob_error
+
+# OOB confusion matrix and variable importance.
+fit.rf$confusion
+randomForest::importance(fit.rf)
+randomForest::varImpPlot(fit.rf)
+```
+
+```{r oob-probabilities}
+# OOB probability of a "Yes" decision. For each observation, this probability
+# uses votes only from trees that did not use that observation for training.
+oob_probability <- fit.rf$votes[, "Yes"]
+oob_actual <- data1$dec
+oob_actual_yes <- oob_actual == "Yes"
+```
+
+```{r roc-curve}
+# ROC curve: sensitivity versus false-positive rate across all thresholds.
+roc_object <- pROC::roc(
+  response = oob_actual,
+  predictor = oob_probability,
+  levels = c("No", "Yes"),
+  direction = "<",
+  quiet = TRUE
+)
+
+plot(
+  roc_object,
+  legacy.axes = TRUE,
+  print.auc = TRUE,
+  col = "blue",
+  lwd = 2,
+  main = "OOB ROC Curve"
+)
+abline(a = 0, b = 1, lty = 2, col = "gray50")
+
+roc_auc <- as.numeric(pROC::auc(roc_object))
+roc_auc
+```
+
+```{r precision-recall-curve}
+# PR curve: precision versus recall for the positive ("Yes") class.
+# Predictions with the same probability are grouped at one threshold.
+pr_curve <- tibble::tibble(
+  actual_yes = oob_actual_yes,
+  probability = oob_probability
+) |>
+  dplyr::group_by(probability) |>
+  dplyr::summarise(
+    positive_count = sum(actual_yes),
+    negative_count = sum(!actual_yes),
+    .groups = "drop"
+  ) |>
+  dplyr::arrange(dplyr::desc(probability)) |>
+  dplyr::mutate(
+    true_positive = cumsum(positive_count),
+    false_positive = cumsum(negative_count),
+    recall = true_positive / sum(oob_actual_yes),
+    precision = true_positive / (true_positive + false_positive)
+  )
+
+# Average precision summarizes the PR curve; larger values are better.
+average_precision <- sum(
+  c(pr_curve$recall[1], diff(pr_curve$recall)) * pr_curve$precision
+)
+
+pr_plot_data <- dplyr::bind_rows(
+  tibble::tibble(recall = 0, precision = 1),
+  dplyr::select(pr_curve, recall, precision)
+)
+
+positive_prevalence <- mean(oob_actual_yes)
+
+ggplot2::ggplot(
+  pr_plot_data,
+  ggplot2::aes(x = recall, y = precision)
+) +
+  ggplot2::geom_step(direction = "hv", color = "blue", linewidth = 1) +
+  ggplot2::geom_hline(
+    yintercept = positive_prevalence,
+    linetype = 2,
+    color = "gray50"
+  ) +
+  ggplot2::coord_cartesian(xlim = c(0, 1), ylim = c(0, 1)) +
+  ggplot2::labs(
+    title = "OOB Precision-Recall Curve",
+    subtitle = paste("Average precision =", round(average_precision, 3)),
+    x = "Recall",
+    y = "Precision"
+  ) +
+  ggplot2::theme_minimal()
+
+average_precision
+```
+
+```{r calibration-plot}
+# Calibration compares predicted "Yes" probabilities with observed "Yes"
+# frequencies. Ten groups of approximately equal size are used.
+calibration_data <- tibble::tibble(
+  actual_yes = as.numeric(oob_actual_yes),
+  predicted_probability = oob_probability
+) |>
+  dplyr::mutate(bin = dplyr::ntile(predicted_probability, 10)) |>
+  dplyr::group_by(bin) |>
+  dplyr::summarise(
+    mean_predicted_probability = mean(predicted_probability),
+    observed_yes_rate = mean(actual_yes),
+    observations = dplyr::n(),
+    .groups = "drop"
+  )
+
+ggplot2::ggplot(
+  calibration_data,
+  ggplot2::aes(
+    x = mean_predicted_probability,
+    y = observed_yes_rate
+  )
+) +
+  ggplot2::geom_abline(
+    intercept = 0,
+    slope = 1,
+    linetype = 2,
+    color = "gray50"
+  ) +
+  ggplot2::geom_line(color = "blue", linewidth = 1) +
+  ggplot2::geom_point(
+    ggplot2::aes(size = observations),
+    color = "blue",
+    show.legend = FALSE
+  ) +
+  ggplot2::coord_equal(xlim = c(0, 1), ylim = c(0, 1)) +
+  ggplot2::labs(
+    title = "OOB Calibration Plot",
+    x = "Mean predicted probability",
+    y = "Observed Yes rate"
+  ) +
+  ggplot2::theme_minimal()
+
+# Brier score is the mean squared error of the predicted probabilities.
+# Smaller values indicate better probabilistic predictions.
+brier_score <- mean(
+  (oob_probability - as.numeric(oob_actual_yes))^2
+)
+brier_score
+```
