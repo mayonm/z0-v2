@@ -1,0 +1,235 @@
+Recommended slideshow structure
+1. Title
+Can Racial Preferences Predict the Decision to Pursue a Partner?
+Subtitle:
+Predicting “Yes” or “No” decisions in a speed-dating experiment
+
+Visual: simple title slide, not a graph.
+2. Introduction: Why study this?
+Main points:
+Romantic decisions are categorical but influenced by several personal and interpersonal factors.
+People may state preferences before meeting someone, but stated preferences may not perfectly predict actual choices.
+We investigate whether race-related preferences contain predictive information and how they compare with post-date impressions.
+Key distinction:
+Prediction is not causation, and predicting a choice is not the same as explaining why it occurred.
+
+3. Research question
+Primary question:
+To what extent can an individual’s decision to pursue another person be predicted using their self-reported racial preference and the racial relationship between the two participants?
+
+Secondary question:
+How does race-related predictive power compare with models that also include post-date evaluations?
+
+Define the target:
+dec = Yes: participant wanted to see the partner again.
+dec = No: participant did not.
+4. Prior work and dataset origin
+The dataset came from a Columbia University speed-dating experiment conducted across 21 waves from 2002–2004.
+Participants:
+Completed questionnaires before the event.
+Met several partners for short dates.
+Rated each partner after meeting.
+Indicated whether they wanted to see each person again.
+The associated paper is Fisman, Iyengar, Kamenica, and Simonson’s 2006 study, “Gender Differences in Mate Selection: Evidence from a Speed Dating Experiment,” published in The Quarterly Journal of Economics. Publication record
+Important prior-work point:
+The original research studied mate-selection behavior and differences between stated preferences and observed choices. Our project reframes the data as a supervised classification problem.
+
+5. The data
+Explain the unit of observation:
+One row represents one participant’s evaluation and decision about one partner.
+
+Variables:
+Category	Variables
+Target	dec
+Participant	gender, age, race
+Partner	age_o, race_o
+Racial preference	imprace, samerace
+Post-date evaluations	attr, sinc, intel, fun, amb, shar
+
+Define imprace:
+Self-reported importance of dating someone from the same racial or ethnic background.
+Scale from 0 to 10.
+Measured before the dating decision.
+6. Data cleaning and feature construction
+Show a compact flow:
+8,378 raw decision rows
+        ↓
+Select outcome and predictors
+        ↓
+Remove rows missing required variables
+        ↓
+6,865 complete decision rows
+        ↓
+528 unique participants
+        ↓
+Split participants into train and test sets
+Cleaning decisions:
+Removed observations missing any required modeling variable.
+Converted race and gender codes to categorical variables.
+Corrected race code 6 to “Other.”
+Excluded iid from the predictors.
+Retained iid only to control the train/test split.
+Constructed feature:
+\[
+\text{Preference alignment}
+=
+\text{imprace}\times\text{samerace}
+\]Interpretation:
+Zero for different-race dates.
+Equal to the participant’s imprace score for same-race dates.
+7. EDA: Who is represented?
+Use [race distribution](/Users/gian-carloamarca/z0-v2-1/outputs/figures/eda/01_race_distribution.png).
+Key counts:
+European/Caucasian-American: 304
+Asian/Pacific Islander/Asian-American: 136
+Latino/Hispanic American: 42
+Other: 37
+Black/African American: 26
+Main message:
+The participant distribution is highly imbalanced, so percentages for smaller groups are less stable.
+
+Do not interpret group differences yet.
+8. EDA: Do decisions vary by racial pairing?
+Use:
+[Same-race decisions](/Users/gian-carloamarca/z0-v2-1/outputs/figures/eda/02_decisions_by_same_race.png)
+[Race-pair heatmap](/Users/gian-carloamarca/z0-v2-1/outputs/figures/eda/03_race_decision_heatmap.png)
+Main points:
+Positive-decision rates differ across participant–partner race combinations.
+Same-race status shows an observable association with decisions.
+Some heatmap cells are based on relatively few participants or dates.
+Correct language:
+“We observe differences in positive-decision rates.”
+
+Avoid:
+“Race caused participants to make different decisions.”
+
+9. EDA: Does stated racial importance predict behavior?
+Use [decisions by `imprace`](/Users/gian-carloamarca/z0-v2-1/outputs/figures/eda/10_imprace_decisions.png).
+Questions to discuss:
+Does the positive-decision rate change consistently as imprace increases?
+Is the relationship monotonic?
+Are the extreme scores supported by enough observations?
+Main takeaway:
+Self-reported racial importance has some relationship with decisions, but the descriptive relationship is not strong enough to make accurate individual predictions by itself.
+
+10. Models
+Present four models.
+Race-related benchmark
+Uses only:
+Participant race
+Partner race
+Same-race indicator
+imprace
+Preference-alignment interaction
+Purpose:
+Directly test how well race-related information predicts the decision.
+
+Full models
+Logistic regression
+Neural network
+Random forest
+All three use the same demographic, racial-preference, and post-date evaluation variables.
+11. How the models were trained
+Use a simple diagram:
+528 participants
+        ↓ split by iid
+422 training participants ──→ Fit each model
+106 test participants     ──→ Final evaluation
+Important methodological choice:
+Every decision made by a participant belongs entirely to either training or testing.
+
+This prevents the same participant’s behavioral pattern from appearing in both sets.
+Also mention:
+Approximately 80% of participants were used for training.
+Approximately 20% were held out for testing.
+Classification threshold: 0.50.
+All models were evaluated on the same 1,448 test decisions.
+12. How the models were judged
+Explain the metrics briefly:
+Accuracy: overall percentage classified correctly.
+Precision: among predicted “Yes” decisions, how many were actually “Yes”?
+Recall: among actual “Yes” decisions, how many were detected?
+F1: balance between precision and recall.
+ROC-AUC: how well the model ranks “Yes” above “No” across thresholds.
+Average precision: performance on the positive class relative to its prevalence.
+Calibration: whether predicted probabilities correspond to observed rates.
+All reported comparison metrics use one shared evaluation function.
+13. Model comparison
+Use this table:
+Model	Accuracy	Precision	Recall	F1	ROC-AUC	Avg. precision
+Race-related benchmark	0.588	0.608	0.277	0.380	0.601	0.550
+Logistic regression	0.760	0.756	0.702	0.728	0.830	0.795
+Neural network	0.718	0.702	0.663	0.682	0.794	0.752
+Random forest	0.742	0.744	0.664	0.702	0.831	0.793
+
+Main conclusions:
+Race-related information performs better than chance, but only modestly.
+The full models are substantially more accurate.
+Logistic regression and random forest have nearly identical ROC-AUC values.
+Logistic regression has the strongest accuracy, recall, and F1 on this test set.
+The neural network does not improve performance despite being more complex.
+14. What the models mean
+Use:
+[Logistic coefficient plot](/Users/gian-carloamarca/z0-v2-1/outputs/figures/logistic_regression/04_coefficient_plot.png)
+[Random-forest importance plot](/Users/gian-carloamarca/z0-v2-1/outputs/figures/random_forest/02_variable_importance.png)
+Main interpretations:
+Attractiveness is the strongest positive full-model predictor.
+Fun and shared interests also contribute substantially.
+imprace and preference alignment contain predictive information but are not dominant predictors.
+Race-related factors predict much less effectively without post-date evaluations.
+Important qualification:
+Variable importance describes model behavior. It does not identify causal mechanisms.
+
+Recommendation:
+Logistic regression is the preferred final model because its performance is competitive and its coefficients are easier to explain.
+
+15. Bias check
+We need Bias check but we don't how. May just omit.
+
+
+16. Validation and possible application
+Current validation:
+Participant-level held-out test set.
+Same cohort and evaluation method for every model.
+ROC, precision-recall, confusion matrix, and calibration checks.
+
+Realistic application:
+Estimating the probability of a positive decision after a speed date, once the participant’s ratings are available.
+
+Not supported:
+Predicting attraction before two people interact.
+
+The full models use post-date ratings, so their predictions are primarily post-interaction classifications.
+17. Sources of error and bias
+Include:
+Sampling bias: Columbia-area volunteers are not representative of the broader population.
+Historical context: data were collected from 2002–2004.
+Small racial subgroups: some comparisons have high uncertainty.
+Complete-case selection: removing missing observations may change the sample.
+Measurement error: ratings and racial preferences are self-reported.
+Outcome limitation: dec measures stated interest, not an actual relationship.
+Target proximity: post-date ratings are recorded close to the decision and may partially restate the participant’s overall impression.
+Simplified race categories: broad categories cannot represent the complexity of racial identity.
+Single split uncertainty: results can vary with the selected participants.
+Model-selection uncertainty: hyperparameters were not evaluated with nested cross-validation.
+Interaction simplification: imprace × samerace is only one operational definition of racial-preference alignment.
+18. Final conclusions and predictions
+End with three direct answers:
+Can we predict the decision?
+Yes. Full models achieve ROC-AUC values around 0.83.
+
+Can racial preference alone predict it?
+Only weakly. The race-related benchmark has ROC-AUC 0.60 and recall 0.28.
+
+What predicts the decision most strongly?
+The participant’s impressions of the partner—especially attractiveness, fun, and shared interests—are substantially more informative.
+
+Final statement:
+Racial preference contributes some predictive signal, but it is not sufficient for strong individual-level prediction. Interpersonal evaluations after the date explain far more of the model’s predictive performance.
+
+19. References
+Include at minimum:
+Fisman, R., Iyengar, S. S., Kamenica, E., & Simonson, I. (2006). “Gender Differences in Mate Selection: Evidence from a Speed Dating Experiment.” The Quarterly Journal of Economics, 121(2), 673–697. DOI: 10.1162/qjec.2006.121.2.673.
+The provided Speed Dating Data Key.
+R and package documentation for glm, nnet, randomForest, and pROC.
+Your project’s [analysis report](/Users/gian-carloamarca/z0-v2-1/outputs/analysis_outputs.md).
