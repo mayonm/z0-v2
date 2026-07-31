@@ -17,7 +17,21 @@ speed_dating_data <- readr::read_csv(
 )
 speed_dating_data <- speed_dating_data %>%
   filter(!is.na(race))
+speed_dating_data <- speed_dating_data %>%
+  filter(
+    is.na(race) | race != 5,
+    is.na(race_o) | race_o != 5
+  )
 
+race_levels <- c(1, 2, 3, 4, 6)
+
+race_labels <- c(
+  "Black/African American",
+  "European/Caucasian-American",
+  "Latino/Hispanic American",
+  "Asian/Pacific Islander/Asian-American",
+  "Other"
+)
 
 speed_dating_data
 
@@ -59,17 +73,17 @@ head(speed_dating_data)
 ## EDA
 ```{r making a grpah for the distribution of race in the dataset}
 race_distribution <- speed_dating_data %>%
+  filter(race %in% c(1, 2, 3, 4, 6)) %>%
   distinct(iid, .keep_all = TRUE) %>%
   mutate(
     race_label = factor(
       race,
-      levels = 1:6,
+      levels = c(1, 2, 3, 4, 6),
       labels = c(
         "Black/African American",
         "European/Caucasian-American",
         "Latino/Hispanic American",
         "Asian/Pacific Islander/Asian-American",
-        "Native American",
         "Other"
       )
     )
@@ -80,12 +94,19 @@ ggplot(
   aes(x = race_label)
 ) +
   geom_bar(fill = "steelblue", color = "black") +
+  geom_text(
+    stat = "count",
+    aes(label = after_stat(count)),
+    vjust = -0.4
+  ) +
   labs(
     title = "Distribution of Race Among Survey Participants",
     x = "Race",
     y = "Number of Participants"
   ) +
-  scale_x_discrete(drop = FALSE) +
+  scale_y_continuous(
+    expand = expansion(mult = c(0, 0.1))
+  ) +
   theme_minimal() +
   theme(
     axis.text.x = element_text(angle = 45, hjust = 1)
@@ -98,13 +119,12 @@ race_counts <- speed_dating_data %>%
   mutate(
     race = factor(
       race,
-      levels = 1:6,
+      levels = 1:5,
       labels = c(
         "Black/African American",
         "European/Caucasian-American",
         "Latino/Hispanic American",
         "Asian/Pacific Islander/Asian-American",
-        "Native American",
         "Other"
       )
     )
@@ -152,6 +172,302 @@ ggplot(
 ```
 
 
+```{r The Preference Matrix: race vs. race_o Match Rate}
+race_labels <- c(
+  "Black/African American",
+  "European/Caucasian-American",
+  "Latino/Hispanic American",
+  "Asian/Pacific Islander/Asian-American",
+  "Other"
+)
+
+race_decision_heatmap <- speed_dating_data %>%
+  filter(!is.na(race), !is.na(race_o), !is.na(dec)) %>%
+  group_by(race, race_o) %>%
+  summarise(
+    mean_decision = mean(dec),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    participant_race = factor(
+      race,
+      levels = race_levels,
+      labels = race_labels
+    ),
+    partner_race = factor(
+      race_o,
+      levels = race_levels,
+      labels = race_labels
+    )
+  )
+
+ggplot(
+  race_decision_heatmap,
+  aes(
+    x = partner_race,
+    y = participant_race,
+    fill = mean_decision
+  )
+) +
+  geom_tile(color = "white", linewidth = 0.5) +
+  geom_text(
+    aes(label = paste0(round(mean_decision * 100), "%")),
+    color = "black",
+    size = 3
+  ) +
+  scale_fill_gradient(
+    low = "white",
+    high = "steelblue",
+    limits = c(0, 1),
+    labels = function(x) paste0(round(x * 100), "%")
+  ) +
+  scale_x_discrete(drop = FALSE) +
+  scale_y_discrete(drop = FALSE) +
+  labs(
+    title = "Positive Dating Decisions by Participant and Partner Race",
+    x = "Partner's race",
+    y = "Participant's race",
+    fill = "Positive\ndecisions"
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  )
+```
+
 ```{r}
 
+attractiveness_plot_data <- speed_dating_data %>%
+  filter(
+    race %in% c(1, 2, 3, 4, 6),
+    samerace %in% c(0, 1),
+    !is.na(attr)
+  ) %>%
+  mutate(
+    race_label = factor(
+      race,
+      levels = c(1, 2, 3, 4, 6),
+      labels = c(
+        "Black/African American",
+        "European/Caucasian-American",
+        "Latino/Hispanic American",
+        "Asian/Pacific Islander/Asian-American",
+        "Other"
+      )
+    ),
+    same_race_label = factor(
+      samerace,
+      levels = c(0, 1),
+      labels = c("Different race", "Same race")
+    )
+  )
+
+ggplot(
+  attractiveness_plot_data,
+  aes(
+    x = same_race_label,
+    y = attr,
+    fill = same_race_label
+  )
+) +
+  geom_boxplot(
+    width = 0.65,
+    outlier.alpha = 0.25
+  ) +
+  facet_wrap(~ race_label) +
+  scale_fill_manual(
+    values = c(
+      "Different race" = "steelblue",
+      "Same race" = "darkorange"
+    )
+  ) +
+  labs(
+    title = "Attractiveness Ratings by Same-Race Status",
+    subtitle = "Faceted by the participant's race",
+    x = "Participant and partner race",
+    y = "Attractiveness rating",
+    fill = "Race status"
+  ) +
+  theme_minimal() +
+  theme(
+    legend.position = "bottom",
+    axis.text.x = element_text(angle = 30, hjust = 1)
+  )
+
+
+
+#the other 5 graphs
+rating_plot_data <- speed_dating_data %>%
+  filter(
+    race %in% c(1, 2, 3, 4, 6),
+    samerace %in% c(0, 1)
+  ) %>%
+  mutate(
+    race_label = factor(
+      race,
+      levels = c(1, 2, 3, 4, 6),
+      labels = c(
+        "Black/African American",
+        "European/Caucasian-American",
+        "Latino/Hispanic American",
+        "Asian/Pacific Islander/Asian-American",
+        "Other"
+      )
+    ),
+    same_race_label = factor(
+      samerace,
+      levels = c(0, 1),
+      labels = c("Different race", "Same race")
+    )
+  )
+
+#fun
+ggplot(
+  rating_plot_data %>% filter(!is.na(fun)),
+  aes(
+    x = same_race_label,
+    y = fun,
+    fill = same_race_label
+  )
+) +
+  geom_boxplot(width = 0.65, outlier.alpha = 0.25) +
+  facet_wrap(~ race_label) +
+  scale_fill_manual(
+    values = c(
+      "Different race" = "steelblue",
+      "Same race" = "darkorange"
+    )
+  ) +
+  labs(
+    title = "Fun Ratings by Same-Race Status",
+    subtitle = "Faceted by the participant's race",
+    x = "Participant and partner race",
+    y = "Fun rating",
+    fill = "Race status"
+  ) +
+  theme_minimal() +
+  theme(
+    legend.position = "bottom",
+    axis.text.x = element_text(angle = 30, hjust = 1)
+  )
+
+#sinc
+ggplot(
+  rating_plot_data %>% filter(!is.na(sinc)),
+  aes(
+    x = same_race_label,
+    y = sinc,
+    fill = same_race_label
+  )
+) +
+  geom_boxplot(width = 0.65, outlier.alpha = 0.25) +
+  facet_wrap(~ race_label) +
+  scale_fill_manual(
+    values = c(
+      "Different race" = "steelblue",
+      "Same race" = "darkorange"
+    )
+  ) +
+  labs(
+    title = "Sincerity Ratings by Same-Race Status",
+    subtitle = "Faceted by the participant's race",
+    x = "Participant and partner race",
+    y = "Sincerity rating",
+    fill = "Race status"
+  ) +
+  theme_minimal() +
+  theme(
+    legend.position = "bottom",
+    axis.text.x = element_text(angle = 30, hjust = 1)
+  )
+
+#shar
+ggplot(
+  rating_plot_data %>% filter(!is.na(shar)),
+  aes(
+    x = same_race_label,
+    y = shar,
+    fill = same_race_label
+  )
+) +
+  geom_boxplot(width = 0.65, outlier.alpha = 0.25) +
+  facet_wrap(~ race_label) +
+  scale_fill_manual(
+    values = c(
+      "Different race" = "steelblue",
+      "Same race" = "darkorange"
+    )
+  ) +
+  labs(
+    title = "Shared-Interest Ratings by Same-Race Status",
+    subtitle = "Faceted by the participant's race",
+    x = "Participant and partner race",
+    y = "Shared-interest rating",
+    fill = "Race status"
+  ) +
+  theme_minimal() +
+  theme(
+    legend.position = "bottom",
+    axis.text.x = element_text(angle = 30, hjust = 1)
+  )
+
+#amb
+ggplot(
+  rating_plot_data %>% filter(!is.na(amb)),
+  aes(
+    x = same_race_label,
+    y = amb,
+    fill = same_race_label
+  )
+) +
+  geom_boxplot(width = 0.65, outlier.alpha = 0.25) +
+  facet_wrap(~ race_label) +
+  scale_fill_manual(
+    values = c(
+      "Different race" = "steelblue",
+      "Same race" = "darkorange"
+    )
+  ) +
+  labs(
+    title = "Ambition Ratings by Same-Race Status",
+    subtitle = "Faceted by the participant's race",
+    x = "Participant and partner race",
+    y = "Ambition rating",
+    fill = "Race status"
+  ) +
+  theme_minimal() +
+  theme(
+    legend.position = "bottom",
+    axis.text.x = element_text(angle = 30, hjust = 1)
+  )
+
+#int
+ggplot(
+  rating_plot_data %>% filter(!is.na(intel)),
+  aes(
+    x = same_race_label,
+    y = intel,
+    fill = same_race_label
+  )
+) +
+  geom_boxplot(width = 0.65, outlier.alpha = 0.25) +
+  facet_wrap(~ race_label) +
+  scale_fill_manual(
+    values = c(
+      "Different race" = "steelblue",
+      "Same race" = "darkorange"
+    )
+  ) +
+  labs(
+    title = "Intelligence Ratings by Same-Race Status",
+    subtitle = "Faceted by the participant's race",
+    x = "Participant and partner race",
+    y = "Intelligence rating",
+    fill = "Race status"
+  ) +
+  theme_minimal() +
+  theme(
+    legend.position = "bottom",
+    axis.text.x = element_text(angle = 30, hjust = 1)
+  )
 ```
