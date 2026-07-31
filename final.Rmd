@@ -471,3 +471,557 @@ ggplot(
     axis.text.x = element_text(angle = 30, hjust = 1)
   )
 ```
+
+```{r}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+set.seed(20260730)
+
+```
+
+```{r}
+speed_dating_data <- read.csv(
+  "data/Speed_Dating_Data.csv",
+  na.strings = c("", "NA"),
+  stringsAsFactors = FALSE,
+  check.names = FALSE
+)
+
+model_variables <- c(
+  "dec", "gender", "age", "race", "age_o", "race_o", "samerace",
+  "attr", "sinc", "intel", "fun", "amb", "shar"
+)
+
+dat <- speed_dating_data[, model_variables]
+dat$decision <- as.integer(dat$dec == 1)
+dat$dec <- NULL
+
+categorical_variables <- c("gender", "race", "race_o")
+dat[categorical_variables] <- lapply(dat[categorical_variables], factor)
+
+dat <- dat[complete.cases(dat), ]
+dat$decision <- factor(dat$decision, levels = c(0, 1))
+table(dat$decision)
+```
+
+
+```{r}
+yes_rows <- which(dat$decision == 1)
+no_rows <- which(dat$decision == 0)
+train_rows <- c(
+  sample(yes_rows, floor(0.80 * length(yes_rows))),
+  sample(no_rows, floor(0.80 * length(no_rows)))
+)
+
+train <- dat[train_rows, , drop = FALSE]
+test <- dat[-train_rows, , drop = FALSE]
+y_test <- as.integer(as.character(test$decision))
+
+logistic_fit <- glm(
+  decision ~ .,
+  data = train,
+  family = binomial()
+)
+
+probability_yes <- as.numeric(predict(logistic_fit, newdata = test, type = "response"))
+classification_threshold <- 0.50
+predicted <- as.integer(probability_yes >= classification_threshold)
+```
+
+```{r}
+confusion_matrix <- table(
+  Actual = factor(y_test, levels = c(0, 1), labels = c("No", "Yes")),
+  Predicted = factor(predicted, levels = c(0, 1), labels = c("No", "Yes"))
+)
+confusion_matrix
+
+tp <- confusion_matrix["Yes", "Yes"]
+tn <- confusion_matrix["No", "No"]
+fp <- confusion_matrix["No", "Yes"]
+fn <- confusion_matrix["Yes", "No"]
+
+safe_divide <- function(numerator, denominator) {
+  if (denominator == 0) NA_real_ else numerator / denominator
+}
+
+accuracy <- safe_divide(tp + tn, sum(confusion_matrix))
+precision <- safe_divide(tp, tp + fp)
+recall <- safe_divide(tp, tp + fn)
+f1_score <- safe_divide(2 * precision * recall, precision + recall)
+```
+
+```{r}
+roc_curve <- function(actual, score) {
+  ordering <- order(score, decreasing = TRUE)
+  ordered_actual <- actual[ordering]
+  data.frame(
+    false_positive_rate = c(0, cumsum(ordered_actual == 0) / sum(ordered_actual == 0)),
+    true_positive_rate = c(0, cumsum(ordered_actual == 1) / sum(ordered_actual == 1))
+  )
+}
+
+roc <- roc_curve(y_test, probability_yes)
+roc_auc <- sum(diff(roc$false_positive_rate) *
+  (head(roc$true_positive_rate, -1) + tail(roc$true_positive_rate, -1)) / 2)
+
+plot(
+  roc$false_positive_rate, roc$true_positive_rate,
+  type = "s", lwd = 2, col = "#2166AC",
+  xlab = "False positive rate", ylab = "True positive rate",
+  main = sprintf("ROC curve (ROC-AUC = %.3f)", roc_auc)
+)
+abline(0, 1, lty = 2, col = "grey50")
+legend(
+  "bottomright",
+  legend = c(sprintf("Logistic regression: ROC-AUC = %.3f", roc_auc),
+             "No-discrimination reference"),
+  col = c("#2166AC", "grey50"), lty = c(1, 2), lwd = c(2, 1), bty = "n"
+)
+```
+
+```{r}
+pr_curve <- function(actual, score) {
+  ordering <- order(score, decreasing = TRUE)
+  ordered_actual <- actual[ordering]
+  true_positive <- cumsum(ordered_actual == 1)
+  data.frame(
+    recall = c(0, true_positive / sum(ordered_actual == 1)),
+    precision = c(1, true_positive / seq_along(ordered_actual))
+  )
+}
+
+pr <- pr_curve(y_test, probability_yes)
+prc_auc <- sum(diff(pr$recall) *
+  (head(pr$precision, -1) + tail(pr$precision, -1)) / 2)
+average_precision <- sum(diff(pr$recall) * tail(pr$precision, -1))
+
+plot(
+  pr$recall, pr$precision,
+  type = "s", lwd = 2, col = "#B2182B",
+  xlab = "Recall", ylab = "Precision",
+  main = sprintf("Precision-recall curve (PRC-AUC = %.3f)", prc_auc)
+)
+abline(h = mean(y_test), lty = 2, col = "grey50")
+legend(
+  "bottomleft",
+  legend = c(
+    sprintf("Logistic regression: PRC-AUC = %.3f", prc_auc),
+    sprintf("Average precision = %.3f", average_precision),
+    sprintf("No-skill average Yes rate = %.3f", mean(y_test))
+  ),
+  col = c("#B2182B", "#B2182B", "grey50"),
+  lty = c(1, 1, 2), lwd = c(2, 2, 1), bty = "n"
+)
+```
+
+```{r}
+metrics <- data.frame(
+  Metric = c(
+    "Accuracy", "Precision", "Recall", "F1 Score",
+    "ROC-AUC", "PRC-AUC", "Average precision"
+  ),
+  Value = c(
+    accuracy, precision, recall, f1_score,
+    roc_auc, prc_auc, average_precision
+  )
+)
+knitr::kable(metrics, digits = 4)
+```
+
+```{r}
+bins <- cut(probability_yes, breaks = seq(0, 1, by = 0.10), include.lowest = TRUE)
+calibration <- data.frame(
+  mean_prediction = as.numeric(tapply(probability_yes, bins, mean)),
+  observed_yes_rate = as.numeric(tapply(y_test, bins, mean))
+)
+calibration <- calibration[complete.cases(calibration), , drop = FALSE]
+
+plot(
+  calibration$mean_prediction, calibration$observed_yes_rate,
+  type = "b", pch = 19, lwd = 2, col = "#4D9221",
+  xlim = c(0, 1), ylim = c(0, 1),
+  xlab = "Mean predicted probability", ylab = "Observed Yes rate",
+  main = "Calibration plot"
+)
+abline(0, 1, lty = 2, col = "grey50")
+```
+
+```{r}
+coefficient_table <- data.frame(
+  Variable = names(coef(logistic_fit)),
+  Coefficient = as.numeric(coef(logistic_fit)),
+  row.names = NULL
+)
+coefficient_table <- subset(coefficient_table, Variable != "(Intercept)")
+coefficient_table$Odds_Ratio <- exp(coefficient_table$Coefficient)
+coefficient_table$Direction <- ifelse(
+  coefficient_table$Coefficient > 0,
+  "Higher odds of Yes",
+  "Lower odds of Yes"
+)
+coefficient_table <- coefficient_table[order(coefficient_table$Coefficient, decreasing = TRUE), ]
+
+knitr::kable(coefficient_table, digits = 4)
+```
+
+```{r}
+coefficient_plot_data <- coefficient_table[order(coefficient_table$Coefficient), ]
+old_par <- par(mar = c(5, 11, 4, 2) + 0.1)
+barplot(
+  coefficient_plot_data$Coefficient,
+  names.arg = coefficient_plot_data$Variable,
+  horiz = TRUE,
+  las = 1,
+  col = ifelse(coefficient_plot_data$Coefficient > 0, "#2166AC", "#B2182B"),
+  main = "Logistic-regression coefficients",
+  xlab = "Coefficient on the log-odds scale",
+  cex.names = 0.75
+)
+abline(v = 0, lty = 2)
+par(old_par)
+```
+
+
+```{r}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+set.seed(20260730)
+```
+
+```{r}
+decision = 1  # Yes: the participant wants to see the partner again
+decision = 0  # No
+```
+
+```{r}
+if (!requireNamespace("nnet", quietly = TRUE)) {
+  stop("This report requires the nnet package. Install it with install.packages('nnet').")
+}
+
+library(nnet)
+
+speed_dating_data <- read.csv(
+  "data/Speed_Dating_Data.csv",
+  na.strings = c("", "NA"),
+  stringsAsFactors = FALSE,
+  check.names = FALSE
+)
+
+model_variables <- c(
+  "dec", "gender", "race", "race_o", "samerace",
+  "attr", "sinc", "intel", "fun", "amb", "shar"
+)
+
+dat <- speed_dating_data[, model_variables]
+dat$decision <- as.integer(dat$dec == 1)
+dat$dec <- NULL
+
+categorical_variables <- c(
+  "gender", "race", "race_o"
+)
+dat[categorical_variables] <- lapply(dat[categorical_variables], factor)
+
+dat <- dat[complete.cases(dat), ]
+dat$decision <- factor(dat$decision, levels = c(0, 1), labels = c("No", "Yes"))
+
+table(dat$decision)
+```
+
+```{r}
+yes_rows <- which(dat$decision == "Yes")
+no_rows <- which(dat$decision == "No")
+
+train_rows <- c(
+  sample(yes_rows, floor(0.80 * length(yes_rows))),
+  sample(no_rows, floor(0.80 * length(no_rows)))
+)
+
+train <- dat[train_rows, , drop = FALSE]
+test <- dat[-train_rows, , drop = FALSE]
+
+x_all <- model.matrix(decision ~ ., dat)[, -1, drop = FALSE]
+x_train <- x_all[train_rows, , drop = FALSE]
+x_test <- x_all[-train_rows, , drop = FALSE]
+y_train <- as.integer(train$decision == "Yes")
+y_test <- as.integer(test$decision == "Yes")
+
+train_means <- colMeans(x_train)
+train_sds <- apply(x_train, 2, sd)
+train_sds[is.na(train_sds) | train_sds == 0] <- 1
+
+x_train_scaled <- sweep(sweep(x_train, 2, train_means, "-"), 2, train_sds, "/")
+x_test_scaled <- sweep(sweep(x_test, 2, train_means, "-"), 2, train_sds, "/")
+```
+
+```{r}
+nn_fit <- nnet(
+  x = x_train_scaled,
+  y = y_train,
+  size = 8,
+  decay = 0.001,
+  maxit = 500,
+  entropy = TRUE,
+  linout = FALSE,
+  trace = FALSE,
+  MaxNWts = 10000
+)
+
+probability_yes <- as.numeric(predict(nn_fit, x_test_scaled, type = "raw"))
+
+classification_threshold <- 0.50
+predicted_decision <- factor(
+  ifelse(probability_yes >= classification_threshold, "Yes", "No"),
+  levels = c("No", "Yes")
+)
+actual_decision <- factor(test$decision, levels = c("No", "Yes"))
+
+confusion_matrix <- table(
+  Actual = actual_decision,
+  Predicted = predicted_decision
+)
+confusion_matrix
+```
+
+```{r}
+predictions <- data.frame(
+  probability_yes = probability_yes,
+  predicted_decision = predicted_decision,
+  actual_decision = actual_decision
+)
+head(predictions)
+```
+
+```{r}
+tp <- sum(y_test == 1 & predicted_decision == "Yes")
+tn <- sum(y_test == 0 & predicted_decision == "No")
+fp <- sum(y_test == 0 & predicted_decision == "Yes")
+fn <- sum(y_test == 1 & predicted_decision == "No")
+
+safe_divide <- function(numerator, denominator) {
+  if (denominator == 0) NA_real_ else numerator / denominator
+}
+
+auc <- function(actual, scores) {
+  positive <- actual == 1
+  n_positive <- sum(positive)
+  n_negative <- sum(!positive)
+  if (n_positive == 0 || n_negative == 0) return(NA_real_)
+  ranks <- rank(scores, ties.method = "average")
+  (sum(ranks[positive]) - n_positive * (n_positive + 1) / 2) /
+    (n_positive * n_negative)
+}
+
+accuracy <- safe_divide(tp + tn, length(y_test))
+sensitivity <- safe_divide(tp, tp + fn)
+specificity <- safe_divide(tn, tn + fp)
+balanced_accuracy <- mean(c(sensitivity, specificity), na.rm = TRUE)
+
+pr_ordering <- order(probability_yes, decreasing = TRUE)
+pr_actual <- y_test[pr_ordering]
+pr_true_positive <- cumsum(pr_actual == 1)
+pr_recall <- c(0, pr_true_positive / sum(pr_actual == 1))
+pr_precision <- c(1, pr_true_positive / seq_along(pr_actual))
+prc_auc <- sum(diff(pr_recall) *
+  (head(pr_precision, -1) + tail(pr_precision, -1)) / 2)
+average_precision <- sum(diff(pr_recall) * tail(pr_precision, -1))
+
+metrics <- data.frame(
+  threshold = classification_threshold,
+  accuracy = accuracy,
+  sensitivity_yes = sensitivity,
+  specificity_no = specificity,
+  balanced_accuracy = balanced_accuracy,
+  roc_auc = auc(y_test, probability_yes),
+  prc_auc = prc_auc,
+  average_precision = average_precision
+)
+metrics
+```
+
+```{r}
+graph_dir <- file.path("graphs", "neural_network")
+dir.create(graph_dir, recursive = TRUE, showWarnings = FALSE)
+
+save_png <- function(filename, plot_function, width = 1600, height = 1000) {
+  png(file.path(graph_dir, filename), width = width, height = height, res = 180)
+  on.exit(dev.off(), add = TRUE)
+  plot_function()
+}
+
+plot_class_balance <- function() {
+  counts <- table(dat$decision)
+  barplot(
+    counts,
+    col = c("#4C78A8", "#F58518"),
+    ylab = "Number of decisions",
+    main = "Class balance in the modeling data"
+  )
+}
+
+plot_confusion_matrix <- function() {
+  plot.new()
+  plot.window(xlim = c(0, 2), ylim = c(0, 2))
+  title("Neural network confusion matrix (test set)")
+  for (row in seq_len(2)) {
+    for (column in seq_len(2)) {
+      x_left <- column - 1
+      y_bottom <- 2 - row
+      fill <- if (row == column) "#B7D8B7" else "#F2C2C2"
+      rect(x_left, y_bottom, x_left + 1, y_bottom + 1, col = fill, border = "white")
+      text(x_left + 0.5, y_bottom + 0.5, confusion_matrix[row, column], cex = 1.6)
+    }
+  }
+  axis(1, at = c(0.5, 1.5), labels = colnames(confusion_matrix), tick = FALSE)
+  axis(2, at = c(1.5, 0.5), labels = rownames(confusion_matrix), tick = FALSE, las = 1)
+  mtext("Predicted decision", side = 1, line = 2.4)
+  mtext("Actual decision", side = 2, line = 2.4)
+  box()
+}
+
+roc_curve <- function(actual, scores) {
+  ordering <- order(scores, decreasing = TRUE)
+  ordered_actual <- actual[ordering]
+  positive_total <- sum(ordered_actual == 1)
+  negative_total <- sum(ordered_actual == 0)
+  data.frame(
+    false_positive_rate = c(0, cumsum(ordered_actual == 0) / negative_total),
+    true_positive_rate = c(0, cumsum(ordered_actual == 1) / positive_total)
+  )
+}
+
+pr_curve <- function(actual, scores) {
+  ordering <- order(scores, decreasing = TRUE)
+  ordered_actual <- actual[ordering]
+  true_positive <- cumsum(ordered_actual == 1)
+  data.frame(
+    recall = c(0, true_positive / sum(ordered_actual == 1)),
+    precision = c(1, true_positive / seq_along(ordered_actual))
+  )
+}
+
+roc_values <- roc_curve(y_test, probability_yes)
+pr_values <- pr_curve(y_test, probability_yes)
+
+plot_roc <- function() {
+  plot(
+    roc_values$false_positive_rate, roc_values$true_positive_rate,
+    type = "l", lwd = 3, col = "#4C78A8",
+    xlab = "False positive rate", ylab = "True positive rate",
+    main = sprintf("ROC curve (ROC-AUC = %.3f)", metrics$roc_auc),
+    xlim = c(0, 1), ylim = c(0, 1)
+  )
+  abline(0, 1, lty = 2, col = "gray50")
+  legend(
+    "bottomright",
+    legend = c(sprintf("Model: ROC-AUC = %.3f", metrics$roc_auc),
+               "No-discrimination reference"),
+    col = c("#4C78A8", "gray50"), lty = c(1, 2), lwd = c(3, 1), bty = "n"
+  )
+}
+
+plot_precision_recall <- function() {
+  plot(
+    pr_values$recall, pr_values$precision,
+    type = "l", lwd = 3, col = "#F58518",
+    xlab = "Recall (sensitivity for Yes)", ylab = "Precision",
+    main = sprintf("Precision-recall curve (PRC-AUC = %.3f)", prc_auc),
+    xlim = c(0, 1), ylim = c(0, 1)
+  )
+  abline(h = mean(y_test), lty = 2, col = "gray50")
+  legend(
+    "bottomleft",
+    legend = c(
+      sprintf("Model: PRC-AUC = %.3f; average precision = %.3f", prc_auc, average_precision),
+      sprintf("No-skill average Yes rate = %.3f", mean(y_test))
+    ),
+    col = c("#F58518", "gray50"), lty = c(1, 2), lwd = c(3, 1), bty = "n"
+  )
+}
+
+plot_probability_distribution <- function() {
+  no_scores <- probability_yes[y_test == 0]
+  yes_scores <- probability_yes[y_test == 1]
+  breaks <- seq(0, 1, by = 0.05)
+  no_histogram <- hist(no_scores, breaks = breaks, plot = FALSE)
+  yes_histogram <- hist(yes_scores, breaks = breaks, plot = FALSE)
+  ymax <- max(c(no_histogram$counts, yes_histogram$counts))
+  plot(
+    no_histogram, col = rgb(0.30, 0.47, 0.66, 0.55), border = "white",
+    xlim = c(0, 1), ylim = c(0, ymax),
+    xlab = "Predicted probability of Yes", ylab = "Test-set count",
+    main = "Predicted-probability distribution by actual decision"
+  )
+  plot(yes_histogram, col = rgb(0.96, 0.52, 0.09, 0.55), border = "white", add = TRUE)
+  abline(v = classification_threshold, lty = 2, lwd = 2)
+  legend(
+    "topright", legend = c("Actual No", "Actual Yes", "0.50 threshold"),
+    fill = c(rgb(0.30, 0.47, 0.66, 0.55), rgb(0.96, 0.52, 0.09, 0.55), NA),
+    border = c("white", "white", NA), lty = c(NA, NA, 2), bty = "n"
+  )
+}
+
+plot_calibration <- function() {
+  bins <- cut(probability_yes, breaks = seq(0, 1, by = 0.10), include.lowest = TRUE)
+  calibration <- data.frame(
+    predicted_probability = as.numeric(tapply(probability_yes, bins, mean)),
+    observed_yes_rate = as.numeric(tapply(y_test, bins, mean))
+  )
+  calibration <- calibration[complete.cases(calibration), , drop = FALSE]
+  plot(
+    calibration$predicted_probability, calibration$observed_yes_rate,
+    pch = 19, cex = 1.2, col = "#54A24B",
+    xlab = "Mean predicted probability", ylab = "Observed Yes rate",
+    main = "Calibration plot (test set)", xlim = c(0, 1), ylim = c(0, 1)
+  )
+  lines(calibration$predicted_probability, calibration$observed_yes_rate,
+        col = "#54A24B", lwd = 2)
+  abline(0, 1, lty = 2, col = "gray50")
+}
+
+set.seed(20260730)
+baseline_accuracy <- mean(as.integer(predicted_decision == "Yes") == y_test)
+permutation_importance <- vapply(seq_len(ncol(x_test_scaled)), function(column) {
+  permuted_test <- x_test_scaled
+  permuted_test[, column] <- sample(permuted_test[, column])
+  permuted_probability <- as.numeric(predict(nn_fit, permuted_test, type = "raw"))
+  permuted_prediction <- as.integer(permuted_probability >= classification_threshold)
+  baseline_accuracy - mean(permuted_prediction == y_test)
+}, numeric(1))
+names(permutation_importance) <- colnames(x_test_scaled)
+
+importance <- sort(permutation_importance, decreasing = TRUE)
+
+plot_permutation_importance <- function() {
+  barplot(
+    rev(importance), names.arg = rev(names(importance)),
+    horiz = TRUE, las = 1, col = "#72B7B2",
+    xlab = "Decrease in test accuracy after permutation",
+    main = "Permutation importance of encoded predictors"
+  )
+  abline(v = 0, lty = 2, col = "gray50")
+}
+
+save_png("01_class_balance.png", plot_class_balance)
+save_png("02_confusion_matrix.png", plot_confusion_matrix)
+save_png("03_roc_curve.png", plot_roc)
+save_png("04_precision_recall_curve.png", plot_precision_recall)
+save_png("05_probability_distribution.png", plot_probability_distribution)
+save_png("06_calibration_plot.png", plot_calibration)
+save_png("07_permutation_importance.png", plot_permutation_importance)
+
+graph_files <- file.path(
+  graph_dir,
+  c(
+    "01_class_balance.png", "02_confusion_matrix.png", "03_roc_curve.png",
+    "04_precision_recall_curve.png", "05_probability_distribution.png",
+    "06_calibration_plot.png", "07_permutation_importance.png"
+  )
+)
+```
+
+```{r}
+if (requireNamespace("knitr", quietly = TRUE)) {
+  knitr::include_graphics(graph_files)
+} else {
+  graph_files
+}
+```
+
