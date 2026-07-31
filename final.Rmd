@@ -119,14 +119,8 @@ race_counts <- speed_dating_data %>%
   mutate(
     race = factor(
       race,
-      levels = 1:5,
-      labels = c(
-        "Black/African American",
-        "European/Caucasian-American",
-        "Latino/Hispanic American",
-        "Asian/Pacific Islander/Asian-American",
-        "Other"
-      )
+      levels = race_levels,
+      labels = race_labels
     )
   ) %>%
   count(race, name = "number_of_people", .drop = FALSE)
@@ -136,7 +130,10 @@ race_counts
 ```
 
 ```{r}
-total_unique_people <- 26+304+42+136+0+37
+total_unique_people <- speed_dating_data %>%
+  filter(!is.na(race)) %>%
+  summarise(number_of_people = n_distinct(iid)) %>%
+  pull(number_of_people)
 total_unique_people
 ```
 
@@ -167,6 +164,40 @@ ggplot(
     x = "Same-race status",
     y = "Percentage of decisions",
     fill = "Decision"
+  ) +
+  theme_minimal()
+```
+
+```{r decisions by self-reported importance of race}
+# imprace is the participant's pre-event response to:
+# "How important is it that a person you date be of the same racial/ethnic
+# background?" It is measured from 0 (not important) to 10 (very important).
+imprace_decisions <- readr::read_csv(
+  "data/Speed_Dating_Data.csv",
+  show_col_types = FALSE
+) %>%
+  filter(!is.na(imprace), !is.na(dec)) %>%
+  group_by(imprace) %>%
+  summarise(
+    positive_decision_rate = mean(dec == 1),
+    decisions = n(),
+    .groups = "drop"
+  )
+
+ggplot(
+  imprace_decisions,
+  aes(x = imprace, y = positive_decision_rate)
+) +
+  geom_line(color = "steelblue", linewidth = 1) +
+  geom_point(aes(size = decisions), color = "steelblue") +
+  scale_x_continuous(breaks = 0:10) +
+  scale_y_continuous(labels = scales::percent_format(accuracy = 1)) +
+  labs(
+    title = "Dating Decisions by Self-Reported Importance of Race",
+    subtitle = "Point size represents the number of decisions",
+    x = "Importance of sharing a racial/ethnic background (0–10)",
+    y = "Positive-decision rate",
+    size = "Decisions"
   ) +
   theme_minimal()
 ```
@@ -487,35 +518,71 @@ speed_dating_data <- read.csv(
 )
 
 model_variables <- c(
-  "dec", "gender", "age", "race", "age_o", "race_o", "samerace",
+  "iid", "dec", "gender", "age", "race", "age_o", "race_o", "samerace",
+  "imprace",
   "attr", "sinc", "intel", "fun", "amb", "shar"
 )
 
-dat <- speed_dating_data[, model_variables]
-dat$decision <- as.integer(dat$dec == 1)
-dat$dec <- NULL
+model_data <- speed_dating_data[, model_variables]
+model_data$decision <- factor(
+  ifelse(model_data$dec == 1, "Yes", "No"),
+  levels = c("No", "Yes")
+)
+model_data$dec <- NULL
+
+# This interaction operationalizes whether the participant's stated preference
+# is aligned with the current partner: it is zero for a different-race partner
+# and equals the participant's 0–10 imprace score for a same-race partner.
+model_data$race_preference_alignment <-
+  model_data$imprace * model_data$samerace
 
 categorical_variables <- c("gender", "race", "race_o")
-dat[categorical_variables] <- lapply(dat[categorical_variables], factor)
+model_data[categorical_variables] <- lapply(
+  model_data[categorical_variables],
+  factor
+)
 
-dat <- dat[complete.cases(dat), ]
-dat$decision <- factor(dat$decision, levels = c(0, 1))
-table(dat$decision)
+model_data <- model_data[complete.cases(model_data), ]
+
+# Split by participant, not by date row. Every observation for a participant
+# is assigned to exactly one partition, preventing participant leakage.
+set.seed(20260730)
+participant_ids <- unique(model_data$iid)
+train_iids <- sample(
+  participant_ids,
+  size = floor(0.80 * length(participant_ids))
+)
+train_rows <- which(model_data$iid %in% train_iids)
+test_rows <- which(!model_data$iid %in% train_iids)
+
+stopifnot(
+  length(intersect(
+    unique(model_data$iid[train_rows]),
+    unique(model_data$iid[test_rows])
+  )) == 0
+)
+
+dat <- model_data[, setdiff(names(model_data), "iid"), drop = FALSE]
+train <- dat[train_rows, , drop = FALSE]
+test <- dat[test_rows, , drop = FALSE]
+y_test <- as.integer(test$decision == "Yes")
+
+data.frame(
+  partition = c("Train", "Test"),
+  participants = c(
+    length(unique(model_data$iid[train_rows])),
+    length(unique(model_data$iid[test_rows]))
+  ),
+  decisions = c(length(train_rows), length(test_rows)),
+  positive_rate = c(
+    mean(train$decision == "Yes"),
+    mean(test$decision == "Yes")
+  )
+)
 ```
 
 
 ```{r}
-yes_rows <- which(dat$decision == 1)
-no_rows <- which(dat$decision == 0)
-train_rows <- c(
-  sample(yes_rows, floor(0.80 * length(yes_rows))),
-  sample(no_rows, floor(0.80 * length(no_rows)))
-)
-
-train <- dat[train_rows, , drop = FALSE]
-test <- dat[-train_rows, , drop = FALSE]
-y_test <- as.integer(as.character(test$decision))
-
 logistic_fit <- glm(
   decision ~ .,
   data = train,
@@ -523,6 +590,21 @@ logistic_fit <- glm(
 )
 
 probability_yes <- as.numeric(predict(logistic_fit, newdata = test, type = "response"))
+logistic_probability <- probability_yes
+
+# A deliberately restricted benchmark answers the research question more
+# directly: how predictive are race-related variables without post-date
+# ratings such as attractiveness, fun, or shared interests?
+race_preference_fit <- glm(
+  decision ~ race + race_o + samerace + imprace +
+    race_preference_alignment,
+  data = train,
+  family = binomial()
+)
+race_preference_probability <- as.numeric(
+  predict(race_preference_fit, newdata = test, type = "response")
+)
+
 classification_threshold <- 0.50
 predicted <- as.integer(probability_yes >= classification_threshold)
 ```
@@ -625,6 +707,16 @@ metrics <- data.frame(
   )
 )
 knitr::kable(metrics, digits = 4)
+
+logistic_metrics <- data.frame(
+  Model = "Logistic regression",
+  Accuracy = accuracy,
+  Precision = precision,
+  Recall = recall,
+  F1 = f1_score,
+  ROC_AUC = roc_auc,
+  Average_Precision = average_precision
+)
 ```
 
 ```{r}
@@ -698,48 +790,18 @@ if (!requireNamespace("nnet", quietly = TRUE)) {
 
 library(nnet)
 
-speed_dating_data <- read.csv(
-  "data/Speed_Dating_Data.csv",
-  na.strings = c("", "NA"),
-  stringsAsFactors = FALSE,
-  check.names = FALSE
-)
-
-model_variables <- c(
-  "dec", "gender", "race", "race_o", "samerace",
-  "attr", "sinc", "intel", "fun", "amb", "shar"
-)
-
-dat <- speed_dating_data[, model_variables]
-dat$decision <- as.integer(dat$dec == 1)
-dat$dec <- NULL
-
-categorical_variables <- c(
-  "gender", "race", "race_o"
-)
-dat[categorical_variables] <- lapply(dat[categorical_variables], factor)
-
-dat <- dat[complete.cases(dat), ]
-dat$decision <- factor(dat$decision, levels = c(0, 1), labels = c("No", "Yes"))
-
+# Reuse the common complete-case cohort and participant-level partition created
+# above so model performance is directly comparable.
 table(dat$decision)
 ```
 
 ```{r}
-yes_rows <- which(dat$decision == "Yes")
-no_rows <- which(dat$decision == "No")
-
-train_rows <- c(
-  sample(yes_rows, floor(0.80 * length(yes_rows))),
-  sample(no_rows, floor(0.80 * length(no_rows)))
-)
-
 train <- dat[train_rows, , drop = FALSE]
-test <- dat[-train_rows, , drop = FALSE]
+test <- dat[test_rows, , drop = FALSE]
 
 x_all <- model.matrix(decision ~ ., dat)[, -1, drop = FALSE]
 x_train <- x_all[train_rows, , drop = FALSE]
-x_test <- x_all[-train_rows, , drop = FALSE]
+x_test <- x_all[test_rows, , drop = FALSE]
 y_train <- as.integer(train$decision == "Yes")
 y_test <- as.integer(test$decision == "Yes")
 
@@ -765,6 +827,7 @@ nn_fit <- nnet(
 )
 
 probability_yes <- as.numeric(predict(nn_fit, x_test_scaled, type = "raw"))
+nn_probability <- probability_yes
 
 classification_threshold <- 0.50
 predicted_decision <- factor(
@@ -812,6 +875,11 @@ auc <- function(actual, scores) {
 accuracy <- safe_divide(tp + tn, length(y_test))
 sensitivity <- safe_divide(tp, tp + fn)
 specificity <- safe_divide(tn, tn + fp)
+precision <- safe_divide(tp, tp + fp)
+f1_score <- safe_divide(
+  2 * precision * sensitivity,
+  precision + sensitivity
+)
 balanced_accuracy <- mean(c(sensitivity, specificity), na.rm = TRUE)
 
 pr_ordering <- order(probability_yes, decreasing = TRUE)
@@ -834,6 +902,16 @@ metrics <- data.frame(
   average_precision = average_precision
 )
 metrics
+
+nn_metrics <- data.frame(
+  Model = "Neural network",
+  Accuracy = accuracy,
+  Precision = precision,
+  Recall = sensitivity,
+  F1 = f1_score,
+  ROC_AUC = metrics$roc_auc,
+  Average_Precision = average_precision
+)
 ```
 
 ```{r}
@@ -1026,56 +1104,30 @@ if (requireNamespace("knitr", quietly = TRUE)) {
 ```
 
 ```{r}
-# loading
-if (!require("pacman")) {
-  install.packages("pacman")
+if (!requireNamespace("randomForest", quietly = TRUE)) {
+  stop("This report requires the randomForest package.")
 }
-pacman::p_load(
-  tree, rpart, randomForest, ranger, rattle, pROC,
-  partykit, ggplot2, glmnet, lda, data.table,
-  stargazer, gridExtra, ggrepel, readr, dplyr, tidyr
-)
+if (!requireNamespace("pROC", quietly = TRUE)) {
+  stop("This report requires the pROC package.")
+}
 options(scipen = 0, digits = 3)
 ```
 
 ```{r}
-data_path <- "../../data/speed_dating_clean.csv"
-data <- readr::read_csv(data_path, show_col_types = FALSE)
-
-# Select variables by name so the code does not depend on column positions.
-target <- "dec"
-predictors <- c(
-  "gender", "age", "race",
-  "age_o", "race_o", "samerace",
-  "attr", "sinc", "intel", "fun", "amb", "shar"
-)
-
-required_columns <- c(target, predictors)
-
-# data1 is the final modeling data. iid is excluded because it is only a participant identifier.
-# data1 changes numerical variables into categorical variables/factors
-data1 <- data |>
-  dplyr::select(dplyr::all_of(required_columns)) |>
-  dplyr::mutate(
-    dec = factor(dec, levels = c(0, 1), labels = c("No", "Yes")),
-    gender = factor(gender, levels = c(0, 1), labels = c("Female", "Male")),
-    race = factor(race),
-    race_o = factor(race_o),
-    samerace = factor(samerace, levels = c(0, 1), labels = c("No", "Yes"))
-  ) |>
-  tidyr::drop_na()
-
-# dim(data1)
-# names(data1)
-# table(data1$dec)
+# Reuse the same predictors, complete cases, and participant-level split used
+# by logistic regression and the neural network.
+data1 <- dat
+rf_train <- data1[train_rows, , drop = FALSE]
+rf_test <- data1[test_rows, , drop = FALSE]
 ```
 
 ```{r}
-# Binary random forest using the OOB error for internal evaluation.
-set.seed(1)
+# The OOB curve remains useful as a training diagnostic, but final performance
+# is computed on the common held-out participant test set.
+set.seed(20260730)
 fit.rf <- randomForest::randomForest(
-  dec ~ .,
-  data = data1,
+  decision ~ .,
+  data = rf_train,
   mtry = 4,
   ntree = 500,
   importance = TRUE
@@ -1085,45 +1137,42 @@ fit.rf <- randomForest::randomForest(
 ```
 
 ```{r}
-# OOB predictions and OOB classification error
-oob_pred <- fit.rf$predicted
-oob_error <- mean(oob_pred != data1$dec)
+# Held-out predictions for direct comparison with the other two models.
+rf_probability <- as.numeric(
+  predict(fit.rf, newdata = rf_test, type = "prob")[, "Yes"]
+)
+rf_predicted <- factor(
+  ifelse(rf_probability >= 0.50, "Yes", "No"),
+  levels = c("No", "Yes")
+)
+rf_actual <- factor(rf_test$decision, levels = c("No", "Yes"))
 
-oob_error
 table(
-  Actual = data1$dec,
-  Predicted = oob_pred
+  Actual = rf_actual,
+  Predicted = rf_predicted
 )
 
-# OOB classification error as the number of trees increases.
+# OOB classification error across trees is shown only as a training diagnostic.
 plot(
   fit.rf,
   type = "l",
   col = c("black", "blue", "red"),
-  main = "OOB classification error"
+  main = "Random-forest training diagnostic: OOB error"
 )
-oob_error <- fit.rf$err.rate[fit.rf$ntree, "OOB"]
-oob_error
 
-# OOB confusion matrix and variable importance.
-fit.rf$confusion
 randomForest::importance(fit.rf)
 randomForest::varImpPlot(fit.rf)
 ```
 
 ```{r}
-# OOB probability of a "Yes" decision. For each observation, this probability
-# uses votes only from trees that did not use that observation for training.
-oob_probability <- fit.rf$votes[, "Yes"]
-oob_actual <- data1$dec
-oob_actual_yes <- oob_actual == "Yes"
+test_actual_yes <- rf_actual == "Yes"
 ```
 
 ```{r}
 # ROC curve: sensitivity versus false-positive rate across all thresholds.
 roc_object <- pROC::roc(
-  response = oob_actual,
-  predictor = oob_probability,
+  response = rf_actual,
+  predictor = rf_probability,
   levels = c("No", "Yes"),
   direction = "<",
   quiet = TRUE
@@ -1135,7 +1184,7 @@ plot(
   print.auc = TRUE,
   col = "blue",
   lwd = 2,
-  main = "OOB ROC Curve"
+  main = "Random-Forest ROC Curve (Common Test Set)"
 )
 abline(a = 0, b = 1, lty = 2, col = "gray50")
 
@@ -1147,8 +1196,8 @@ roc_auc
 # PR curve: precision versus recall for the positive ("Yes") class.
 # Predictions with the same probability are grouped at one threshold.
 pr_curve <- tibble::tibble(
-  actual_yes = oob_actual_yes,
-  probability = oob_probability
+  actual_yes = test_actual_yes,
+  probability = rf_probability
 ) |>
   dplyr::group_by(probability) |>
   dplyr::summarise(
@@ -1160,7 +1209,7 @@ pr_curve <- tibble::tibble(
   dplyr::mutate(
     true_positive = cumsum(positive_count),
     false_positive = cumsum(negative_count),
-    recall = true_positive / sum(oob_actual_yes),
+    recall = true_positive / sum(test_actual_yes),
     precision = true_positive / (true_positive + false_positive)
   )
 
@@ -1174,7 +1223,7 @@ pr_plot_data <- dplyr::bind_rows(
   dplyr::select(pr_curve, recall, precision)
 )
 
-positive_prevalence <- mean(oob_actual_yes)
+positive_prevalence <- mean(test_actual_yes)
 
 ggplot2::ggplot(
   pr_plot_data,
@@ -1188,7 +1237,7 @@ ggplot2::ggplot(
   ) +
   ggplot2::coord_cartesian(xlim = c(0, 1), ylim = c(0, 1)) +
   ggplot2::labs(
-    title = "OOB Precision-Recall Curve",
+    title = "Random-Forest Precision-Recall Curve (Common Test Set)",
     subtitle = paste("Average precision =", round(average_precision, 3)),
     x = "Recall",
     y = "Precision"
@@ -1202,8 +1251,8 @@ average_precision
 # Calibration compares predicted "Yes" probabilities with observed "Yes"
 # frequencies. Ten groups of approximately equal size are used.
 calibration_data <- tibble::tibble(
-  actual_yes = as.numeric(oob_actual_yes),
-  predicted_probability = oob_probability
+  actual_yes = as.numeric(test_actual_yes),
+  predicted_probability = rf_probability
 ) |>
   dplyr::mutate(bin = dplyr::ntile(predicted_probability, 10)) |>
   dplyr::group_by(bin) |>
@@ -1235,7 +1284,7 @@ ggplot2::ggplot(
   ) +
   ggplot2::coord_equal(xlim = c(0, 1), ylim = c(0, 1)) +
   ggplot2::labs(
-    title = "OOB Calibration Plot",
+    title = "Random-Forest Calibration Plot (Common Test Set)",
     x = "Mean predicted probability",
     y = "Observed Yes rate"
   ) +
@@ -1244,7 +1293,72 @@ ggplot2::ggplot(
 # Brier score is the mean squared error of the predicted probabilities.
 # Smaller values indicate better probabilistic predictions.
 brier_score <- mean(
-  (oob_probability - as.numeric(oob_actual_yes))^2
+  (rf_probability - as.numeric(test_actual_yes))^2
 )
 brier_score
+```
+
+## Direct model comparison
+
+All models below use the same complete-case observations, participant-level
+training partition, participant-level test partition, classification threshold,
+and metric definitions. The three full models use identical predictors. The
+race-related benchmark is intentionally restricted to `race`, `race_o`,
+`samerace`, `imprace`, and the preference-alignment interaction.
+
+```{r}
+# One evaluator is applied to every probability vector. This guarantees that
+# thresholding, confusion-matrix metrics, ROC-AUC, and average precision use
+# identical definitions for all three models.
+evaluate_test_predictions <- function(model_name, actual, probability,
+                                      threshold = 0.50) {
+  predicted <- as.integer(probability >= threshold)
+  tp <- sum(actual == 1 & predicted == 1)
+  tn <- sum(actual == 0 & predicted == 0)
+  fp <- sum(actual == 0 & predicted == 1)
+  fn <- sum(actual == 1 & predicted == 0)
+
+  precision <- safe_divide(tp, tp + fp)
+  recall <- safe_divide(tp, tp + fn)
+
+  ordering <- order(probability, decreasing = TRUE)
+  ordered_actual <- actual[ordering]
+  cumulative_tp <- cumsum(ordered_actual == 1)
+  recall_curve <- c(0, cumulative_tp / sum(ordered_actual == 1))
+  precision_curve <- c(1, cumulative_tp / seq_along(ordered_actual))
+  average_precision <- sum(
+    diff(recall_curve) * tail(precision_curve, -1)
+  )
+
+  data.frame(
+    Model = model_name,
+    Accuracy = safe_divide(tp + tn, length(actual)),
+    Precision = precision,
+    Recall = recall,
+    F1 = safe_divide(2 * precision * recall, precision + recall),
+    ROC_AUC = auc(actual, probability),
+    Average_Precision = average_precision
+  )
+}
+
+model_comparison <- dplyr::bind_rows(
+  evaluate_test_predictions(
+    "Race-related benchmark", y_test, race_preference_probability
+  ),
+  evaluate_test_predictions(
+    "Logistic regression", y_test, logistic_probability
+  ),
+  evaluate_test_predictions(
+    "Neural network", y_test, nn_probability
+  ),
+  evaluate_test_predictions(
+    "Random forest", y_test, rf_probability
+  )
+)
+
+knitr::kable(
+  model_comparison,
+  digits = 3,
+  caption = "Models evaluated with one metric function on the same held-out participants"
+)
 ```

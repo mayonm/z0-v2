@@ -14,6 +14,10 @@ metrics, confusion matrices, coefficients, and numerical results.
 
 ![Decisions by same-race status](figures/eda/02_decisions_by_same_race.png)
 
+### Decisions by self-reported importance of race
+
+![Decisions by importance of race](figures/eda/10_imprace_decisions.png)
+
 ### Race decision heatmap
 
 ![Race decision heatmap](figures/eda/03_race_decision_heatmap.png)
@@ -49,7 +53,11 @@ metrics, confusion matrices, coefficients, and numerical results.
 
 ## Random forest
 
-![Random-forest OOB error](figures/random_forest/01_oob_error.png)
+The OOB-error graph is retained as a training diagnostic. ROC, precision-recall,
+calibration, and the final comparison metrics use the same participant-level
+held-out test set as logistic regression and the neural network.
+
+![Random-forest OOB training diagnostic](figures/random_forest/01_oob_error.png)
 
 ![Random-forest variable importance](figures/random_forest/02_variable_importance.png)
 
